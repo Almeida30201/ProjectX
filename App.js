@@ -11,6 +11,17 @@ const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_KEY || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';
 const HAS_SUPABASE = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
 const CATEGORIES = ['Tudo', 'Gastronomia', 'Música', 'Festas', 'Feiras', 'Cultura', 'Esportes'];
+const BRAZIL_STATES = [
+  { code: 'AC', name: 'Acre' }, { code: 'AL', name: 'Alagoas' }, { code: 'AP', name: 'Amapá' },
+  { code: 'AM', name: 'Amazonas' }, { code: 'BA', name: 'Bahia' }, { code: 'CE', name: 'Ceará' },
+  { code: 'DF', name: 'Distrito Federal' }, { code: 'ES', name: 'Espírito Santo' }, { code: 'GO', name: 'Goiás' },
+  { code: 'MA', name: 'Maranhão' }, { code: 'MT', name: 'Mato Grosso' }, { code: 'MS', name: 'Mato Grosso do Sul' },
+  { code: 'MG', name: 'Minas Gerais' }, { code: 'PA', name: 'Pará' }, { code: 'PB', name: 'Paraíba' },
+  { code: 'PR', name: 'Paraná' }, { code: 'PE', name: 'Pernambuco' }, { code: 'PI', name: 'Piauí' },
+  { code: 'RJ', name: 'Rio de Janeiro' }, { code: 'RN', name: 'Rio Grande do Norte' }, { code: 'RS', name: 'Rio Grande do Sul' },
+  { code: 'RO', name: 'Rondônia' }, { code: 'RR', name: 'Roraima' }, { code: 'SC', name: 'Santa Catarina' },
+  { code: 'SP', name: 'São Paulo' }, { code: 'SE', name: 'Sergipe' }, { code: 'TO', name: 'Tocantins' }
+];
 const COLORS = ['#FFE1B8', '#D9D9E0', '#C9F2DE', '#FFD8E7', '#F7E7A9'];
 const SEED_EVENTS = [
   { id: 'seed-1', title: 'Festival de Hambúrguer', category: 'Gastronomia', venue: 'Mercado Central', neighborhood: 'Asa Sul', date: 'Hoje · 18h–23h', price: 'Entrada grátis', emoji: '🍔', color: COLORS[0], description: 'Comida boa, música ao vivo e opções para reunir os amigos. Consulte os preços dos pratos no local.', address: 'Setor Comercial Sul, Brasília - DF', latitude: -15.7975, longitude: -47.8919, demo: true },
@@ -146,6 +157,8 @@ export default function App() {
   const [locationLabel, setLocationLabel] = useState('Brasília, DF'); const [userCoords, setUserCoords] = useState(null); const [radius, setRadius] = useState(10);
   const [manualRegion, setManualRegion] = useState(''); const [showEventPanel, setShowEventPanel] = useState(false); const [loadingLocation, setLoadingLocation] = useState(false); const [syncStatus, setSyncStatus] = useState(HAS_SUPABASE ? 'Conectando à nuvem…' : 'Modo local');
   const [form, setForm] = useState({ title: '', category: 'Gastronomia', venue: '', neighborhood: '', address: '', date: '', price: '', description: '' });
+  const [selectedUF, setSelectedUF] = useState(null);
+  const [showUFOptions, setShowUFOptions] = useState(false);
   const [eventDateInput, setEventDateInput] = useState('');
   const [eventTimeInput, setEventTimeInput] = useState('');
   const [priceIsFree, setPriceIsFree] = useState(false);
@@ -342,24 +355,26 @@ export default function App() {
     if (!validDateTime(eventDateInput, eventTimeInput)) { Alert.alert('Confira data e horário', 'Informe uma data válida no formato DD/MM/AAAA e o horário no formato HH:MM.'); return; }
     const eventDateLabel = formatEventDate(eventDateInput, eventTimeInput);
     const priceLabel = priceIsFree ? 'Gratuito' : (form.price.trim() ? `R$ ${form.price.trim()}` : 'Consulte o organizador');
-    // Prioriza o endereço completo informado pela pessoa. Não presume Brasília,
-    // pois o evento pode acontecer em qualquer cidade do Brasil.
+    if (!selectedUF) { Alert.alert('Selecione o estado', 'Escolha primeiro o estado onde o evento acontecerá para melhorar a precisão do endereço.'); return; }
+    // Contextualiza todas as tentativas de geocodificação com a UF escolhida.
+    // Isso reduz resultados homônimos em cidades ou estados diferentes.
     const enteredAddress = form.address.trim();
+    const regionText = form.neighborhood.trim();
+    const stateName = selectedUF.name;
+    const stateCode = selectedUF.code;
     const locationCandidates = [
-      // Prioriza endereço contextualizado com bairro/cidade informado.
-      // Geocodificar primeiro um endereço curto (ex.: “QI 4 casa 34”) pode
-      // devolver uma rua homônima em outra região.
-      [enteredAddress, form.neighborhood.trim(), 'Brasil'].filter(Boolean).join(', '),
-      [form.venue.trim(), form.neighborhood.trim(), 'Brasil'].filter(Boolean).join(', '),
-      [form.neighborhood.trim(), 'Brasil'].filter(Boolean).join(', '),
-      enteredAddress,
-      [form.venue.trim(), form.neighborhood.trim()].filter(Boolean).join(', '),
-      form.venue.trim()
+      [enteredAddress, regionText, stateName, 'Brasil'].filter(Boolean).join(', '),
+      [form.venue.trim(), regionText, stateName, 'Brasil'].filter(Boolean).join(', '),
+      [regionText, stateName, 'Brasil'].filter(Boolean).join(', '),
+      [enteredAddress, stateName, 'Brasil'].filter(Boolean).join(', '),
+      [form.venue.trim(), stateName, 'Brasil'].filter(Boolean).join(', '),
+      [enteredAddress, regionText, stateCode, 'Brasil'].filter(Boolean).join(', ')
     ];
     const geocoded = await geocodeEventLocation(locationCandidates);
     const coords = geocoded ? { latitude: geocoded.latitude, longitude: geocoded.longitude } : {};
-    const address = enteredAddress || [form.venue.trim(), form.neighborhood.trim()].filter(Boolean).join(', ');
-    const next = { ...form, date: eventDateLabel, price: priceLabel, id: `local-${Date.now()}`, neighborhood: form.neighborhood.trim(), emoji: '✨', color: '#D9D9E0', description: form.description || 'Mais informações com o organizador.', address, ...coords, demo: false, status: 'published' };
+    const address = [enteredAddress, regionText, stateName, 'Brasil'].filter(Boolean).join(', ') || [form.venue.trim(), regionText, stateName].filter(Boolean).join(', ');
+    const neighborhoodLabel = [regionText, stateCode].filter(Boolean).join(' - ');
+    const next = { ...form, date: eventDateLabel, price: priceLabel, id: `local-${Date.now()}`, neighborhood: neighborhoodLabel, state: stateCode, emoji: '✨', color: '#D9D9E0', description: form.description || 'Mais informações com o organizador.', address, ...coords, demo: false, status: 'published' };
     const updatedEvents = [next, ...events.filter(e => String(e.id) !== String(next.id))];
     setEvents(updatedEvents);
     try { await AsyncStorage.setItem(STORAGE_KEYS.events, JSON.stringify(updatedEvents)); }
@@ -371,7 +386,7 @@ export default function App() {
         await supabaseRequest('events', { method: 'POST', headers: { Prefer: 'return=representation' }, body: JSON.stringify(row) }); cloudMessage = 'O evento foi enviado ao banco de dados compartilhado. Ele aparecerá publicamente após passar pelas regras de publicação configuradas.'; syncFromCloud();
       } catch (e) { cloudMessage = `Salvo localmente, mas não foi possível publicar na nuvem: ${e.message}`; }
     }
-    setForm({ title: '', category: 'Gastronomia', venue: '', neighborhood: '', address: '', date: '', price: '', description: '' }); setEventDateInput(''); setEventTimeInput(''); setPriceIsFree(false); setShowMyAds(false); setTab('Anunciar');
+    setForm({ title: '', category: 'Gastronomia', venue: '', neighborhood: '', address: '', date: '', price: '', description: '' }); setSelectedUF(null); setShowUFOptions(false); setEventDateInput(''); setEventTimeInput(''); setPriceIsFree(false); setShowMyAds(false); setTab('Anunciar');
     const locationNote = geocoded
       ? `
 
@@ -484,7 +499,7 @@ Atenção: não conseguimos localizar esse endereço automaticamente. O anúncio
           </View>
         </View>) : <View style={styles.empty}><Text style={styles.emptyEmoji}>＋</Text><Text style={styles.emptyTitle}>Você ainda não criou anúncios</Text><Text style={styles.emptyText}>Quando publicar um evento, ele aparecerá aqui para você consultar.</Text><TouchableOpacity style={styles.primaryButton} onPress={() => setShowMyAds(false)}><Text style={styles.primaryButtonText}>Criar meu primeiro anúncio</Text></TouchableOpacity></View>}
       </View> : <><Text style={styles.formIntro}>Informe o endereço real do evento. O ProjectX tentará obter as coordenadas para criar o marcador no mapa. Com o Supabase configurado, o anúncio também poderá ser compartilhado.</Text>
-      <Text style={styles.label}>Nome do evento *</Text>{field('title', 'Ex.: Festival de música')}<Text style={styles.label}>Categoria</Text><View style={styles.categoryWrap}>{CATEGORIES.filter(c => c !== 'Tudo').map(c => <Pill key={c} label={c} active={form.category === c} onPress={() => setForm({ ...form, category: c })} />)}</View><Text style={styles.label}>Local / estabelecimento *</Text>{field('venue', 'Ex.: Parque, restaurante, casa de shows')}<Text style={styles.label}>Bairro, cidade e estado</Text>{field('neighborhood', 'Ex.: Chatuba, Mesquita - RJ')}<Text style={styles.label}>Endereço completo para o mapa</Text>{field('address', 'Rua, número, bairro, cidade - UF')}<Text style={styles.helperText}>Informe a cidade correta do evento. Isso ajuda a posicionar o marcador no mapa, inclusive quando o evento fica fora de Brasília.</Text>
+      <Text style={styles.label}>Nome do evento *</Text>{field('title', 'Ex.: Festival de música')}<Text style={styles.label}>Categoria</Text><View style={styles.categoryWrap}>{CATEGORIES.filter(c => c !== 'Tudo').map(c => <Pill key={c} label={c} active={form.category === c} onPress={() => setForm({ ...form, category: c })} />)}</View><Text style={styles.label}>Local / estabelecimento *</Text>{field('venue', 'Ex.: Parque, restaurante, casa de shows')}<Text style={styles.label}>Estado onde o evento acontecerá *</Text><TouchableOpacity accessibilityRole="button" accessibilityLabel="Selecionar estado" style={[styles.input, styles.stateSelector]} onPress={() => setShowUFOptions(v => !v)}><Text style={[styles.stateSelectorText, !selectedUF && styles.statePlaceholder]}>{selectedUF ? `${selectedUF.name} (${selectedUF.code})` : 'Selecione o estado primeiro'}</Text><Text style={styles.stateSelectorChevron}>{showUFOptions ? '⌃' : '⌄'}</Text></TouchableOpacity>{showUFOptions && <View style={styles.stateOptions}><ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled" style={styles.stateOptionsScroll}>{BRAZIL_STATES.map(state => <TouchableOpacity key={state.code} style={[styles.stateOption, selectedUF?.code === state.code && styles.stateOptionActive]} onPress={() => { setSelectedUF(state); setShowUFOptions(false); }}><Text style={[styles.stateOptionText, selectedUF?.code === state.code && styles.stateOptionTextActive]}>{state.name} ({state.code})</Text></TouchableOpacity>)}</ScrollView></View>}<Text style={styles.label}>Cidade e bairro *</Text>{field('neighborhood', 'Ex.: Mesquita, Chatuba')}<Text style={styles.label}>Rua e número / endereço completo</Text>{field('address', 'Ex.: Rua das Flores, 123')}<Text style={styles.helperText}>Primeiro escolha o estado; depois informe a cidade/bairro e, se souber, a rua e o número. O ProjectX usará essas informações em conjunto para localizar o evento com mais precisão.</Text>
       <Text style={styles.label}>Data do evento *</Text><View style={styles.quickDateRow}><TouchableOpacity style={styles.quickDateButton} onPress={() => { const d = new Date(); setEventDateInput(`${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`); }}><Text style={styles.quickDateText}>Hoje</Text></TouchableOpacity><TouchableOpacity style={styles.quickDateButton} onPress={() => { const d = new Date(); d.setDate(d.getDate()+1); setEventDateInput(`${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`); }}><Text style={styles.quickDateText}>Amanhã</Text></TouchableOpacity></View>
       <View style={styles.dateTimeRow}><View style={styles.dateFieldWrap}><Text style={styles.fieldHint}>Dia / mês / ano</Text><TextInput value={eventDateInput} onChangeText={v => setEventDateInput(maskDateInput(v))} placeholder="DD/MM/AAAA" placeholderTextColor="#9696A5" keyboardType="number-pad" maxLength={10} style={styles.input}/></View><View style={styles.timeFieldWrap}><Text style={styles.fieldHint}>Horário</Text><TextInput value={eventTimeInput} onChangeText={v => setEventTimeInput(maskTimeInput(v))} placeholder="HH:MM" placeholderTextColor="#9696A5" keyboardType="number-pad" maxLength={5} style={styles.input}/></View></View><Text style={styles.helperText}>Exemplo: 25/10/2026 às 19:30. Use o formato de 24 horas.</Text>
       <Text style={styles.label}>Preço / entrada</Text><TouchableOpacity style={[styles.freePriceButton, priceIsFree && styles.freePriceButtonActive]} onPress={() => { setPriceIsFree(!priceIsFree); if (!priceIsFree) setForm({ ...form, price: '' }); }}><Text style={[styles.freePriceText, priceIsFree && styles.freePriceTextActive]}>{priceIsFree ? '✓ Entrada gratuita' : 'Marcar como gratuito'}</Text></TouchableOpacity>{!priceIsFree && <View style={styles.currencyInputWrap}><Text style={styles.currencyPrefix}>R$</Text><TextInput value={form.price} onChangeText={v => setForm({ ...form, price: currencyInput(v) })} placeholder="0,00" placeholderTextColor="#9696A5" keyboardType="decimal-pad" style={[styles.input, styles.currencyInput]} accessibilityLabel="Valor em reais"/><Text style={styles.currencyHint}>Valor em reais (BRL)</Text></View>}<Text style={styles.helperText}>Se houver cobrança, informe o valor em reais. Se não souber, deixe em branco.</Text>
@@ -495,6 +510,11 @@ Atenção: não conseguimos localizar esse endereço automaticamente. O anúncio
   </SafeAreaView>;
 }
 const styles = StyleSheet.create({
+ stateSelector:{flexDirection:'row',alignItems:'center',justifyContent:'space-between'},
+ stateSelectorText:{fontSize:14,color:'#222232',flex:1}, statePlaceholder:{color:'#9696A5'}, stateSelectorChevron:{fontSize:18,color:'#6B6B7B',marginLeft:10},
+ stateOptions:{borderWidth:1,borderColor:'#ECEBF3',borderRadius:14,backgroundColor:'#FFFFFF',marginTop:-4,marginBottom:12,overflow:'hidden'},
+ stateOptionsScroll:{maxHeight:190}, stateOption:{paddingHorizontal:14,paddingVertical:11,borderBottomWidth:1,borderBottomColor:'#F0EFF5'},
+ stateOptionActive:{backgroundColor:'#45454F'}, stateOptionText:{fontSize:14,color:'#343447'}, stateOptionTextActive:{color:'#FFFFFF',fontWeight:'700'},
  mapScreen:{flex:1,backgroundColor:'#EDECF4'},
   mapOverlay:{...StyleSheet.absoluteFillObject,justifyContent:'flex-start',paddingTop:6,paddingBottom:0},
  mapTopCard:{marginHorizontal:14,backgroundColor:'rgba(247,247,251,0.96)',borderRadius:23,paddingHorizontal:14,paddingTop:8,paddingBottom:10,shadowColor:'#171725',shadowOpacity:0.10,shadowRadius:14,shadowOffset:{width:0,height:4},elevation:4},
