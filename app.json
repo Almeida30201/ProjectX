@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "name": "ProjectX",
+    "slug": "projectx",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Sua localização ajuda a encontrar eventos próximos."
+      }
+    },
+    "android": {
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION"
+      ]
+    },
+    "web": {},
+    "plugins": [
+      "expo-status-bar",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Sua localização é usada para mostrar eventos próximos de você. Ela só é acessada quando você toca no botão de localização."
+        }
+      ]
+    ]
+  }
+}
