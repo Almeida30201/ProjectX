@@ -93,6 +93,38 @@ async function geocodeEventLocation(candidates) {
   }
   return null;
 }
+
+async function geocodeEventLocationInCity(candidates, city, stateName) {
+  // Resolve a cidade selecionada primeiro, para impedir que um endereço
+  // incompleto ou ambíguo mova o marcador para outra região.
+  let cityAnchor = null;
+  for (const query of [`${city}, ${stateName}, Brasil`, `${city}, Brasil`]) {
+    try {
+      const results = await Location.geocodeAsync(query);
+      const point = results?.find(item => Number.isFinite(item?.latitude) && Number.isFinite(item?.longitude));
+      if (point) { cityAnchor = { latitude: point.latitude, longitude: point.longitude, matchedAddress: query }; break; }
+    } catch (error) {
+      console.warn('[ProjectXGeocoding] falha ao localizar cidade de referência:', query, error?.message || error);
+    }
+  }
+  if (!cityAnchor) {
+    const fallback = await geocodeEventLocation(candidates);
+    return fallback ? { ...fallback, usedCityFallback: false } : null;
+  }
+  const uniqueCandidates = [...new Set(candidates.map(value => String(value || '').trim()).filter(Boolean))];
+  for (const address of uniqueCandidates) {
+    try {
+      const results = await Location.geocodeAsync(address);
+      const point = results?.find(item => Number.isFinite(item?.latitude) && Number.isFinite(item?.longitude)
+        && distanceKm(cityAnchor.latitude, cityAnchor.longitude, item.latitude, item.longitude) <= 60);
+      if (point) return { latitude: point.latitude, longitude: point.longitude, matchedAddress: address, usedCityFallback: false };
+    } catch (error) {
+      console.warn('[ProjectXGeocoding] falha ao validar endereço:', address, error?.message || error);
+    }
+  }
+  // Se o endereço não for localizado com segurança, usa o ponto da cidade.
+  return { ...cityAnchor, usedCityFallback: true };
+}
 function Pill({ label, active, onPress }) { return <TouchableOpacity onPress={onPress} style={[styles.pill, active && styles.pillActive]}><Text style={[styles.pillText, active && styles.pillTextActive]}>{label}</Text></TouchableOpacity>; }
 function EventCard({ event, onPress, isSaved = false, onToggleSave, hasUserLocation }) {
   const distance = event.distanceKm;
@@ -390,7 +422,7 @@ export default function App() {
       [enteredAddress, city, stateCode, 'Brasil'].filter(Boolean).join(', '),
       [form.venue.trim(), city, stateCode, 'Brasil'].filter(Boolean).join(', ')
     ];
-    const geocoded = await geocodeEventLocation(locationCandidates);
+    const geocoded = await geocodeEventLocationInCity(locationCandidates, city, stateName);
     const coords = geocoded ? { latitude: geocoded.latitude, longitude: geocoded.longitude } : {};
     const address = [enteredAddress, regionText, stateName, 'Brasil'].filter(Boolean).join(', ') || [form.venue.trim(), regionText, stateName].filter(Boolean).join(', ');
     const neighborhoodLabel = [city, neighborhood, stateCode].filter(Boolean).join(' - ');
@@ -407,13 +439,11 @@ export default function App() {
       } catch (e) { cloudMessage = `Salvo localmente, mas não foi possível publicar na nuvem: ${e.message}`; }
     }
     setForm({ title: '', category: 'Gastronomia', venue: '', neighborhood: '', address: '', date: '', price: '', description: '' }); setSelectedUF(null); setShowUFOptions(false); setMunicipalities([]); setCityQuery(''); setSelectedCity(''); setShowCityOptions(false); setNeighborhoodInput(''); setEventDateInput(''); setEventTimeInput(''); setPriceIsFree(false); setShowMyAds(false); setTab('Anunciar');
-    const locationNote = geocoded
-      ? `
-
-Localização encontrada pelo endereço informado. Se o evento estiver fora do raio atual, busque a cidade/bairro no mapa para encontrá-lo.`
-      : `
-
-Atenção: não conseguimos localizar esse endereço automaticamente. O anúncio foi salvo, mas não terá marcador no mapa até que um endereço mais completo seja informado.`;
+    const locationNote = !geocoded
+      ? `\n\nAtenção: não conseguimos localizar a cidade ou o endereço automaticamente. O anúncio foi salvo, mas não terá marcador até corrigir a localização.`
+      : geocoded.usedCityFallback
+        ? `\n\nAtenção: não foi possível confirmar o endereço exato. O marcador foi colocado aproximadamente no centro de ${city}, ${stateCode}. Corrija o endereço em “Ver meus anúncios” para posicioná-lo com mais precisão.`
+        : `\n\nLocalização encontrada dentro da região de ${city}, ${stateCode}. Se o marcador não estiver no ponto correto, use “Ajustar localização do mapa” em “Ver meus anúncios”.`;
     Alert.alert('Anúncio criado', `${cloudMessage}${locationNote}`, [{ text: 'Ver meus anúncios', onPress: () => setShowMyAds(true) }, { text: 'Continuar', onPress: () => setTab('Explorar') }]);
   };
   const field = (key, placeholder, multiline = false) => <TextInput value={form[key]} onChangeText={v => setForm({ ...form, [key]: v })} placeholder={placeholder} placeholderTextColor="#9696A5" multiline={multiline} style={[styles.input, multiline && styles.multiline]} />;
