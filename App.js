@@ -159,6 +159,12 @@ export default function App() {
   const [form, setForm] = useState({ title: '', category: 'Gastronomia', venue: '', neighborhood: '', address: '', date: '', price: '', description: '' });
   const [selectedUF, setSelectedUF] = useState(null);
   const [showUFOptions, setShowUFOptions] = useState(false);
+  const [municipalities, setMunicipalities] = useState([]);
+  const [loadingMunicipalities, setLoadingMunicipalities] = useState(false);
+  const [cityQuery, setCityQuery] = useState('');
+  const [selectedCity, setSelectedCity] = useState('');
+  const [showCityOptions, setShowCityOptions] = useState(false);
+  const [neighborhoodInput, setNeighborhoodInput] = useState('');
   const [eventDateInput, setEventDateInput] = useState('');
   const [eventTimeInput, setEventTimeInput] = useState('');
   const [priceIsFree, setPriceIsFree] = useState(false);
@@ -177,6 +183,17 @@ export default function App() {
     if (HAS_SUPABASE) syncFromCloud();
   })(); }, []);
   useEffect(() => { if (userCoords && mapRef.current) mapRef.current.animateToRegion({ latitude: userCoords.latitude, longitude: userCoords.longitude, ...mapDeltasForRadius(radius, userCoords.latitude) }, 350); }, [userCoords, radius]);
+  useEffect(() => {
+    let cancelled = false;
+    if (!selectedUF) { setMunicipalities([]); setSelectedCity(''); setCityQuery(''); setShowCityOptions(false); return; }
+    setMunicipalities([]); setSelectedCity(''); setCityQuery(''); setShowCityOptions(false); setLoadingMunicipalities(true);
+    fetch(`https://servicodados.ibge.gov.br/api/v1/localidades/estados/${selectedUF.code}/municipios?orderBy=nome`)
+      .then(response => { if (!response.ok) throw new Error(`IBGE ${response.status}`); return response.json(); })
+      .then(data => { if (!cancelled) setMunicipalities(Array.isArray(data) ? data.map(item => item.nome) : []); })
+      .catch(error => { console.warn('[ProjectXAddress] falha ao carregar municípios do IBGE:', error?.message || error); if (!cancelled) setMunicipalities([]); })
+      .finally(() => { if (!cancelled) setLoadingMunicipalities(false); });
+    return () => { cancelled = true; };
+  }, [selectedUF?.code]);
   // Do not persist initial demo state until the first AsyncStorage read has completed.
   // Otherwise the initial render can overwrite announcements saved from a previous session.
   useEffect(() => { if (storageHydrated) AsyncStorage.setItem(STORAGE_KEYS.events, JSON.stringify(events)).catch(e => console.warn('Falha ao salvar anúncios localmente', e)); }, [events, storageHydrated]);
@@ -358,25 +375,28 @@ export default function App() {
     const eventDateLabel = formatEventDate(eventDateInput, eventTimeInput);
     const priceLabel = priceIsFree ? 'Gratuito' : (form.price.trim() ? `R$ ${form.price.trim()}` : 'Consulte o organizador');
     if (!selectedUF) { Alert.alert('Selecione o estado', 'Escolha primeiro o estado onde o evento acontecerá para melhorar a precisão do endereço.'); return; }
+    if (!selectedCity) { Alert.alert('Selecione a cidade', 'Pesquise e selecione a cidade do evento na lista de municípios do estado escolhido.'); return; }
     // Contextualiza todas as tentativas de geocodificação com a UF escolhida.
     // Isso reduz resultados homônimos em cidades ou estados diferentes.
     const enteredAddress = form.address.trim();
-    const regionText = form.neighborhood.trim();
+    const city = selectedCity.trim();
+    const neighborhood = neighborhoodInput.trim();
+    const regionText = [city, neighborhood].filter(Boolean).join(', ');
     const stateName = selectedUF.name;
     const stateCode = selectedUF.code;
     const locationCandidates = [
       [enteredAddress, regionText, stateName, 'Brasil'].filter(Boolean).join(', '),
       [form.venue.trim(), regionText, stateName, 'Brasil'].filter(Boolean).join(', '),
-      [regionText, stateName, 'Brasil'].filter(Boolean).join(', '),
-      [enteredAddress, stateName, 'Brasil'].filter(Boolean).join(', '),
-      [form.venue.trim(), stateName, 'Brasil'].filter(Boolean).join(', '),
-      [enteredAddress, regionText, stateCode, 'Brasil'].filter(Boolean).join(', ')
+      [neighborhood, city, stateName, 'Brasil'].filter(Boolean).join(', '),
+      [city, stateName, 'Brasil'].filter(Boolean).join(', '),
+      [enteredAddress, city, stateCode, 'Brasil'].filter(Boolean).join(', '),
+      [form.venue.trim(), city, stateCode, 'Brasil'].filter(Boolean).join(', ')
     ];
     const geocoded = await geocodeEventLocation(locationCandidates);
     const coords = geocoded ? { latitude: geocoded.latitude, longitude: geocoded.longitude } : {};
     const address = [enteredAddress, regionText, stateName, 'Brasil'].filter(Boolean).join(', ') || [form.venue.trim(), regionText, stateName].filter(Boolean).join(', ');
-    const neighborhoodLabel = [regionText, stateCode].filter(Boolean).join(' - ');
-    const next = { ...form, date: eventDateLabel, price: priceLabel, id: `local-${Date.now()}`, neighborhood: neighborhoodLabel, state: stateCode, emoji: '✨', color: '#D9D9E0', description: form.description || 'Mais informações com o organizador.', address, ...coords, demo: false, status: 'published' };
+    const neighborhoodLabel = [city, neighborhood, stateCode].filter(Boolean).join(' - ');
+    const next = { ...form, date: eventDateLabel, price: priceLabel, id: `local-${Date.now()}`, neighborhood: neighborhoodLabel, city, state: stateCode, emoji: '✨', color: '#D9D9E0', description: form.description || 'Mais informações com o organizador.', address, ...coords, demo: false, status: 'published' };
     const updatedEvents = [next, ...events.filter(e => String(e.id) !== String(next.id))];
     setEvents(updatedEvents);
     try { await AsyncStorage.setItem(STORAGE_KEYS.events, JSON.stringify(updatedEvents)); }
@@ -388,7 +408,7 @@ export default function App() {
         await supabaseRequest('events', { method: 'POST', headers: { Prefer: 'return=representation' }, body: JSON.stringify(row) }); cloudMessage = 'O evento foi enviado ao banco de dados compartilhado. Ele aparecerá publicamente após passar pelas regras de publicação configuradas.'; syncFromCloud();
       } catch (e) { cloudMessage = `Salvo localmente, mas não foi possível publicar na nuvem: ${e.message}`; }
     }
-    setForm({ title: '', category: 'Gastronomia', venue: '', neighborhood: '', address: '', date: '', price: '', description: '' }); setSelectedUF(null); setShowUFOptions(false); setEventDateInput(''); setEventTimeInput(''); setPriceIsFree(false); setShowMyAds(false); setTab('Anunciar');
+    setForm({ title: '', category: 'Gastronomia', venue: '', neighborhood: '', address: '', date: '', price: '', description: '' }); setSelectedUF(null); setShowUFOptions(false); setMunicipalities([]); setCityQuery(''); setSelectedCity(''); setShowCityOptions(false); setNeighborhoodInput(''); setEventDateInput(''); setEventTimeInput(''); setPriceIsFree(false); setShowMyAds(false); setTab('Anunciar');
     const locationNote = geocoded
       ? `
 
@@ -501,7 +521,7 @@ Atenção: não conseguimos localizar esse endereço automaticamente. O anúncio
           </View>
         </View>) : <View style={styles.empty}><Text style={styles.emptyEmoji}>＋</Text><Text style={styles.emptyTitle}>Você ainda não criou anúncios</Text><Text style={styles.emptyText}>Quando publicar um evento, ele aparecerá aqui para você consultar.</Text><TouchableOpacity style={styles.primaryButton} onPress={() => setShowMyAds(false)}><Text style={styles.primaryButtonText}>Criar meu primeiro anúncio</Text></TouchableOpacity></View>}
       </View> : <><Text style={styles.formIntro}>Informe o endereço real do evento. O ProjectX tentará obter as coordenadas para criar o marcador no mapa. Com o Supabase configurado, o anúncio também poderá ser compartilhado.</Text>
-      <Text style={styles.label}>Nome do evento *</Text>{field('title', 'Ex.: Festival de música')}<Text style={styles.label}>Categoria</Text><View style={styles.categoryWrap}>{CATEGORIES.filter(c => c !== 'Tudo').map(c => <Pill key={c} label={c} active={form.category === c} onPress={() => setForm({ ...form, category: c })} />)}</View><Text style={styles.label}>Local / estabelecimento *</Text>{field('venue', 'Ex.: Parque, restaurante, casa de shows')}<Text style={styles.label}>Estado onde o evento acontecerá *</Text><TouchableOpacity accessibilityRole="button" accessibilityLabel="Selecionar estado" style={[styles.input, styles.stateSelector]} onPress={() => setShowUFOptions(v => !v)}><Text style={[styles.stateSelectorText, !selectedUF && styles.statePlaceholder]}>{selectedUF ? `${selectedUF.name} (${selectedUF.code})` : 'Selecione o estado primeiro'}</Text><Text style={styles.stateSelectorChevron}>{showUFOptions ? '⌃' : '⌄'}</Text></TouchableOpacity>{showUFOptions && <View style={styles.stateOptions}><ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled" style={styles.stateOptionsScroll}>{BRAZIL_STATES.map(state => <TouchableOpacity key={state.code} style={[styles.stateOption, selectedUF?.code === state.code && styles.stateOptionActive]} onPress={() => { setSelectedUF(state); setShowUFOptions(false); }}><Text style={[styles.stateOptionText, selectedUF?.code === state.code && styles.stateOptionTextActive]}>{state.name} ({state.code})</Text></TouchableOpacity>)}</ScrollView></View>}<Text style={styles.label}>Cidade e bairro *</Text>{field('neighborhood', 'Ex.: Mesquita, Chatuba')}<Text style={styles.label}>Rua e número / endereço completo</Text>{field('address', 'Ex.: Rua das Flores, 123')}<Text style={styles.helperText}>Primeiro escolha o estado; depois informe a cidade/bairro e, se souber, a rua e o número. O ProjectX usará essas informações em conjunto para localizar o evento com mais precisão.</Text>
+      <Text style={styles.label}>Nome do evento *</Text>{field('title', 'Ex.: Festival de música')}<Text style={styles.label}>Categoria</Text><View style={styles.categoryWrap}>{CATEGORIES.filter(c => c !== 'Tudo').map(c => <Pill key={c} label={c} active={form.category === c} onPress={() => setForm({ ...form, category: c })} />)}</View><Text style={styles.label}>Local / estabelecimento *</Text>{field('venue', 'Ex.: Parque, restaurante, casa de shows')}<Text style={styles.label}>Estado onde o evento acontecerá *</Text><TouchableOpacity accessibilityRole="button" accessibilityLabel="Selecionar estado" style={[styles.input, styles.stateSelector]} onPress={() => setShowUFOptions(v => !v)}><Text style={[styles.stateSelectorText, !selectedUF && styles.statePlaceholder]}>{selectedUF ? `${selectedUF.name} (${selectedUF.code})` : 'Selecione o estado primeiro'}</Text><Text style={styles.stateSelectorChevron}>{showUFOptions ? '⌃' : '⌄'}</Text></TouchableOpacity>{showUFOptions && <View style={styles.stateOptions}><ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled" style={styles.stateOptionsScroll}>{BRAZIL_STATES.map(state => <TouchableOpacity key={state.code} style={[styles.stateOption, selectedUF?.code === state.code && styles.stateOptionActive]} onPress={() => { setSelectedUF(state); setShowUFOptions(false); }}><Text style={[styles.stateOptionText, selectedUF?.code === state.code && styles.stateOptionTextActive]}>{state.name} ({state.code})</Text></TouchableOpacity>)}</ScrollView></View>}<Text style={styles.label}>Cidade *</Text><TextInput value={cityQuery} onFocus={() => { if (selectedUF) setShowCityOptions(true); }} onChangeText={value => { setCityQuery(value); setSelectedCity(''); setShowCityOptions(true); }} editable={!!selectedUF && !loadingMunicipalities} placeholder={!selectedUF ? 'Selecione o estado primeiro' : loadingMunicipalities ? 'Carregando cidades do estado…' : 'Digite para buscar uma cidade'} placeholderTextColor="#9696A5" style={styles.input} accessibilityLabel="Pesquisar cidade"/><Text style={styles.helperText}>{loadingMunicipalities ? 'Carregando a lista oficial de municípios do IBGE…' : selectedCity ? `Cidade selecionada: ${selectedCity} - ${selectedUF?.code}` : municipalities.length ? 'Escolha uma cidade na lista para continuar.' : 'Se a lista não carregar, verifique a conexão e tente novamente.'}</Text>{showCityOptions && !!selectedUF && !loadingMunicipalities && <View style={styles.stateOptions}><ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled" style={styles.stateOptionsScroll}>{municipalities.filter(name => name.toLocaleLowerCase('pt-BR').includes(cityQuery.trim().toLocaleLowerCase('pt-BR'))).slice(0, 40).map(name => <TouchableOpacity key={name} style={[styles.stateOption, selectedCity === name && styles.stateOptionActive]} onPress={() => { setSelectedCity(name); setCityQuery(name); setShowCityOptions(false); }}><Text style={[styles.stateOptionText, selectedCity === name && styles.stateOptionTextActive]}>{name} - {selectedUF.code}</Text></TouchableOpacity>)}{municipalities.filter(name => name.toLocaleLowerCase('pt-BR').includes(cityQuery.trim().toLocaleLowerCase('pt-BR'))).length === 0 && <Text style={styles.helperText}>Nenhuma cidade encontrada com esse nome. Confira a grafia.</Text>}</ScrollView></View>}<Text style={styles.label}>Bairro (opcional)</Text><TextInput value={neighborhoodInput} onChangeText={setNeighborhoodInput} placeholder="Ex.: Centro, Chatuba, Asa Sul" placeholderTextColor="#9696A5" style={styles.input} editable={!!selectedCity} accessibilityLabel="Bairro do evento"/><Text style={styles.label}>Rua e número / endereço completo</Text>{field('address', 'Ex.: Rua das Flores, 123')}<Text style={styles.helperText}>A cidade é selecionada em uma lista oficial de municípios do IBGE filtrada pelo estado. Depois, informe o bairro e o endereço para refinar a localização do marcador.</Text>
       <Text style={styles.label}>Data do evento *</Text><View style={styles.quickDateRow}><TouchableOpacity style={styles.quickDateButton} onPress={() => { const d = new Date(); setEventDateInput(`${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`); }}><Text style={styles.quickDateText}>Hoje</Text></TouchableOpacity><TouchableOpacity style={styles.quickDateButton} onPress={() => { const d = new Date(); d.setDate(d.getDate()+1); setEventDateInput(`${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`); }}><Text style={styles.quickDateText}>Amanhã</Text></TouchableOpacity></View>
       <View style={styles.dateTimeRow}><View style={styles.dateFieldWrap}><Text style={styles.fieldHint}>Dia / mês / ano</Text><TextInput value={eventDateInput} onChangeText={v => setEventDateInput(maskDateInput(v))} placeholder="DD/MM/AAAA" placeholderTextColor="#9696A5" keyboardType="number-pad" maxLength={10} style={styles.input}/></View><View style={styles.timeFieldWrap}><Text style={styles.fieldHint}>Horário</Text><TextInput value={eventTimeInput} onChangeText={v => setEventTimeInput(maskTimeInput(v))} placeholder="HH:MM" placeholderTextColor="#9696A5" keyboardType="number-pad" maxLength={5} style={styles.input}/></View></View><Text style={styles.helperText}>Exemplo: 25/10/2026 às 19:30. Use o formato de 24 horas.</Text>
       <Text style={styles.label}>Preço / entrada</Text><TouchableOpacity style={[styles.freePriceButton, priceIsFree && styles.freePriceButtonActive]} onPress={() => { setPriceIsFree(!priceIsFree); if (!priceIsFree) setForm({ ...form, price: '' }); }}><Text style={[styles.freePriceText, priceIsFree && styles.freePriceTextActive]}>{priceIsFree ? '✓ Entrada gratuita' : 'Marcar como gratuito'}</Text></TouchableOpacity>{!priceIsFree && <View style={styles.currencyInputWrap}><Text style={styles.currencyPrefix}>R$</Text><TextInput value={form.price} onChangeText={v => setForm({ ...form, price: currencyInput(v) })} placeholder="0,00" placeholderTextColor="#9696A5" keyboardType="decimal-pad" style={[styles.input, styles.currencyInput]} accessibilityLabel="Valor em reais"/><Text style={styles.currencyHint}>Valor em reais (BRL)</Text></View>}<Text style={styles.helperText}>Se houver cobrança, informe o valor em reais. Se não souber, deixe em branco.</Text>
