@@ -352,6 +352,8 @@ export default function App() {
 
   const publish = async () => {
     if (!form.title.trim() || !form.venue.trim()) { Alert.alert('Faltam informações', 'Preencha o nome do evento e o local.'); return; }
+    if (!selectedUF) { Alert.alert('Selecione o estado', 'Escolha o estado antes de informar a localização do evento.'); return; }
+    if (!form.neighborhood.trim()) { Alert.alert('Informe a cidade', 'Preencha a cidade e, se possível, o bairro. Essas informações ajudam a localizar o evento dentro do estado escolhido.'); return; }
     if (!validDateTime(eventDateInput, eventTimeInput)) { Alert.alert('Confira data e horário', 'Informe uma data válida no formato DD/MM/AAAA e o horário no formato HH:MM.'); return; }
     const eventDateLabel = formatEventDate(eventDateInput, eventTimeInput);
     const priceLabel = priceIsFree ? 'Gratuito' : (form.price.trim() ? `R$ ${form.price.trim()}` : 'Consulte o organizador');
