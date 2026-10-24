@@ -187,7 +187,7 @@ export default function App() {
   const [storageHydrated, setStorageHydrated] = useState(false); const [showMyAds, setShowMyAds] = useState(false);
   const [events, setEvents] = useState(SEED_EVENTS); const [savedIds, setSavedIds] = useState([]); const [selected, setSelected] = useState(null);
   const [locationLabel, setLocationLabel] = useState('Brasília, DF'); const [userCoords, setUserCoords] = useState(null); const [radius, setRadius] = useState(10);
-  const [manualRegion, setManualRegion] = useState(''); const [showEventPanel, setShowEventPanel] = useState(false); const [loadingLocation, setLoadingLocation] = useState(false); const [syncStatus, setSyncStatus] = useState(HAS_SUPABASE ? 'Conectando à nuvem…' : 'Modo local');
+  const [manualRegion, setManualRegion] = useState(''); const [showEventPanel, setShowEventPanel] = useState(false); const [loadingLocation, setLoadingLocation] = useState(false); const [syncStatus, setSyncStatus] = useState(HAS_SUPABASE ? 'Conectando à nuvem…' : 'Modo local'); const [refreshingEvents, setRefreshingEvents] = useState(false);
   const [form, setForm] = useState({ title: '', category: 'Gastronomia', venue: '', neighborhood: '', address: '', date: '', price: '', description: '' });
   const [selectedUF, setSelectedUF] = useState(null);
   const [showUFOptions, setShowUFOptions] = useState(false);
@@ -252,6 +252,9 @@ export default function App() {
   useEffect(() => { AsyncStorage.setItem(STORAGE_KEYS.radius, String(radius)).catch(() => {}); }, [radius]);
 
   const syncFromCloud = async () => {
+    if (!HAS_SUPABASE || refreshingEvents) return;
+    setRefreshingEvents(true);
+    setSyncStatus('Atualizando anúncios…');
     try {
       const data = await supabaseRequest('events?select=*&status=eq.published&order=created_at.desc');
       const cloudEvents = (data || []).map(row => ({ ...row, id: String(row.id), venue: row.venue, neighborhood: row.neighborhood || '', date: row.event_date || row.date_label || 'Data a confirmar', price: row.price_label || 'Consulte o organizador', latitude: row.latitude == null ? null : Number(row.latitude), longitude: row.longitude == null ? null : Number(row.longitude), emoji: row.emoji || '✨', color: row.color || '#D9D9E0', description: row.description || '', address: row.address || '' }));
@@ -267,9 +270,10 @@ export default function App() {
       });
       setSyncStatus('Sincronizado com a nuvem');
     } catch (e) { console.warn('Falha na sincronização Supabase', e.message); setSyncStatus('Nuvem indisponível · dados locais'); }
+    finally { setRefreshingEvents(false); }
   };
   const filtered = useMemo(() => {
-    let list = events.filter(e => (category === 'Tudo' || e.category === category) && `${e.title} ${e.venue} ${e.neighborhood} ${e.category} ${e.description || ''}`.toLowerCase().includes(query.trim().toLowerCase()));
+    let list = events.filter(e => (category === 'Tudo' || e.category === category) && `${e.title} ${e.venue} ${e.neighborhood} ${e.city || ''} ${e.state || ''} ${e.address || ''} ${e.category} ${e.description || ''}`.toLocaleLowerCase('pt-BR').includes(query.trim().toLocaleLowerCase('pt-BR')));
     list = list.map(e => ({ ...e, distanceKm: userCoords ? distanceKm(userCoords.latitude, userCoords.longitude, e.latitude, e.longitude) : null }));
     if (userCoords) list = list.filter(e => e.distanceKm == null || e.distanceKm <= radius).sort((a, b) => {
       if (a.distanceKm == null && b.distanceKm == null) return 0;
@@ -565,6 +569,7 @@ export default function App() {
                 {loadingLocation ? <ActivityIndicator size="small" color="#45454F" style={{marginLeft:8}} /> : null}
               </TouchableOpacity>
               <Text style={styles.syncLabel}>{syncStatus}</Text>
+              {HAS_SUPABASE && <TouchableOpacity style={styles.refreshEventsButton} onPress={syncFromCloud} disabled={refreshingEvents} accessibilityRole="button" accessibilityLabel="Atualizar anúncios da nuvem">{refreshingEvents ? <ActivityIndicator size="small" color="#45454F"/> : <Text style={styles.refreshEventsText}>↻ Atualizar anúncios</Text>}</TouchableOpacity>}
             </View>
             <TouchableOpacity style={styles.avatar} onPress={locate}><Text style={styles.avatarText}>⌖</Text></TouchableOpacity>
           </View>
@@ -651,6 +656,7 @@ const styles = StyleSheet.create({
  stateOptions:{borderWidth:1,borderColor:'#ECEBF3',borderRadius:14,backgroundColor:'#FFFFFF',marginTop:-4,marginBottom:12,overflow:'hidden'},
  stateOptionsScroll:{maxHeight:190}, stateOption:{paddingHorizontal:14,paddingVertical:11,borderBottomWidth:1,borderBottomColor:'#F0EFF5'},
  stateOptionActive:{backgroundColor:'#45454F'}, stateOptionText:{fontSize:14,color:'#343447'}, stateOptionTextActive:{color:'#FFFFFF',fontWeight:'700'},
+ refreshEventsButton:{alignSelf:'flex-start',marginTop:4,paddingVertical:4,paddingHorizontal:2,minHeight:24,justifyContent:'center'}, refreshEventsText:{fontSize:12,color:'#45454F',fontWeight:'700'},
  mapScreen:{flex:1,backgroundColor:'#EDECF4'},
   mapOverlay:{...StyleSheet.absoluteFillObject,justifyContent:'flex-start',paddingTop:6,paddingBottom:0},
  mapTopCard:{marginHorizontal:14,backgroundColor:'rgba(247,247,251,0.96)',borderRadius:23,paddingHorizontal:14,paddingTop:8,paddingBottom:10,shadowColor:'#171725',shadowOpacity:0.10,shadowRadius:14,shadowOffset:{width:0,height:4},elevation:4},
