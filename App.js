@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Linking, SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, TextInput, TouchableOpacity, View, ActivityIndicator } from 'react-native';
 import * as Location from 'expo-location';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -11,6 +11,17 @@ const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_KEY || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';
 const HAS_SUPABASE = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
 const CATEGORIES = ['Tudo', 'Gastronomia', 'Música', 'Festas', 'Feiras', 'Cultura', 'Esportes'];
+const BRAZIL_STATES = [
+  { code: 'AC', name: 'Acre' }, { code: 'AL', name: 'Alagoas' }, { code: 'AP', name: 'Amapá' },
+  { code: 'AM', name: 'Amazonas' }, { code: 'BA', name: 'Bahia' }, { code: 'CE', name: 'Ceará' },
+  { code: 'DF', name: 'Distrito Federal' }, { code: 'ES', name: 'Espírito Santo' }, { code: 'GO', name: 'Goiás' },
+  { code: 'MA', name: 'Maranhão' }, { code: 'MT', name: 'Mato Grosso' }, { code: 'MS', name: 'Mato Grosso do Sul' },
+  { code: 'MG', name: 'Minas Gerais' }, { code: 'PA', name: 'Pará' }, { code: 'PB', name: 'Paraíba' },
+  { code: 'PR', name: 'Paraná' }, { code: 'PE', name: 'Pernambuco' }, { code: 'PI', name: 'Piauí' },
+  { code: 'RJ', name: 'Rio de Janeiro' }, { code: 'RN', name: 'Rio Grande do Norte' }, { code: 'RS', name: 'Rio Grande do Sul' },
+  { code: 'RO', name: 'Rondônia' }, { code: 'RR', name: 'Roraima' }, { code: 'SC', name: 'Santa Catarina' },
+  { code: 'SP', name: 'São Paulo' }, { code: 'SE', name: 'Sergipe' }, { code: 'TO', name: 'Tocantins' }
+];
 const COLORS = ['#FFE1B8', '#D9D9E0', '#C9F2DE', '#FFD8E7', '#F7E7A9'];
 const SEED_EVENTS = [
   { id: 'seed-1', title: 'Festival de Hambúrguer', category: 'Gastronomia', venue: 'Mercado Central', neighborhood: 'Asa Sul', date: 'Hoje · 18h–23h', price: 'Entrada grátis', emoji: '🍔', color: COLORS[0], description: 'Comida boa, música ao vivo e opções para reunir os amigos. Consulte os preços dos pratos no local.', address: 'Setor Comercial Sul, Brasília - DF', latitude: -15.7975, longitude: -47.8919, demo: true },
@@ -82,6 +93,38 @@ async function geocodeEventLocation(candidates) {
   }
   return null;
 }
+
+async function geocodeEventLocationInCity(candidates, city, stateName) {
+  // Resolve a cidade selecionada primeiro, para impedir que um endereço
+  // incompleto ou ambíguo mova o marcador para outra região.
+  let cityAnchor = null;
+  for (const query of [`${city}, ${stateName}, Brasil`, `${city}, Brasil`]) {
+    try {
+      const results = await Location.geocodeAsync(query);
+      const point = results?.find(item => Number.isFinite(item?.latitude) && Number.isFinite(item?.longitude));
+      if (point) { cityAnchor = { latitude: point.latitude, longitude: point.longitude, matchedAddress: query }; break; }
+    } catch (error) {
+      console.warn('[ProjectXGeocoding] falha ao localizar cidade de referência:', query, error?.message || error);
+    }
+  }
+  if (!cityAnchor) {
+    const fallback = await geocodeEventLocation(candidates);
+    return fallback ? { ...fallback, usedCityFallback: false } : null;
+  }
+  const uniqueCandidates = [...new Set(candidates.map(value => String(value || '').trim()).filter(Boolean))];
+  for (const address of uniqueCandidates) {
+    try {
+      const results = await Location.geocodeAsync(address);
+      const point = results?.find(item => Number.isFinite(item?.latitude) && Number.isFinite(item?.longitude)
+        && distanceKm(cityAnchor.latitude, cityAnchor.longitude, item.latitude, item.longitude) <= 60);
+      if (point) return { latitude: point.latitude, longitude: point.longitude, matchedAddress: address, usedCityFallback: false };
+    } catch (error) {
+      console.warn('[ProjectXGeocoding] falha ao validar endereço:', address, error?.message || error);
+    }
+  }
+  // Se o endereço não for localizado com segurança, usa o ponto da cidade.
+  return { ...cityAnchor, usedCityFallback: true };
+}
 function Pill({ label, active, onPress }) { return <TouchableOpacity onPress={onPress} style={[styles.pill, active && styles.pillActive]}><Text style={[styles.pillText, active && styles.pillTextActive]}>{label}</Text></TouchableOpacity>; }
 function EventCard({ event, onPress, isSaved = false, onToggleSave, hasUserLocation }) {
   const distance = event.distanceKm;
@@ -146,6 +189,21 @@ export default function App() {
   const [locationLabel, setLocationLabel] = useState('Brasília, DF'); const [userCoords, setUserCoords] = useState(null); const [radius, setRadius] = useState(10);
   const [manualRegion, setManualRegion] = useState(''); const [showEventPanel, setShowEventPanel] = useState(false); const [loadingLocation, setLoadingLocation] = useState(false); const [syncStatus, setSyncStatus] = useState(HAS_SUPABASE ? 'Conectando à nuvem…' : 'Modo local');
   const [form, setForm] = useState({ title: '', category: 'Gastronomia', venue: '', neighborhood: '', address: '', date: '', price: '', description: '' });
+  const [selectedUF, setSelectedUF] = useState(null);
+  const [showUFOptions, setShowUFOptions] = useState(false);
+  const [municipalities, setMunicipalities] = useState([]);
+  const [loadingMunicipalities, setLoadingMunicipalities] = useState(false);
+  const [cityQuery, setCityQuery] = useState('');
+  const [selectedCity, setSelectedCity] = useState('');
+  const [showCityOptions, setShowCityOptions] = useState(false);
+  const [neighborhoodInput, setNeighborhoodInput] = useState('');
+  const [showEventMapPicker, setShowEventMapPicker] = useState(false);
+  const [selectedEventCoords, setSelectedEventCoords] = useState(null);
+  const [eventMapRegion, setEventMapRegion] = useState(null);
+  const [eventMapSearchText, setEventMapSearchText] = useState('');
+  const [searchingEventMapAddress, setSearchingEventMapAddress] = useState(false);
+  const [locatingEventMapUser, setLocatingEventMapUser] = useState(false);
+  const eventMapRef = useRef(null);
   const [eventDateInput, setEventDateInput] = useState('');
   const [eventTimeInput, setEventTimeInput] = useState('');
   const [priceIsFree, setPriceIsFree] = useState(false);
@@ -164,6 +222,29 @@ export default function App() {
     if (HAS_SUPABASE) syncFromCloud();
   })(); }, []);
   useEffect(() => { if (userCoords && mapRef.current) mapRef.current.animateToRegion({ latitude: userCoords.latitude, longitude: userCoords.longitude, ...mapDeltasForRadius(radius, userCoords.latitude) }, 350); }, [userCoords, radius]);
+  useEffect(() => {
+    let cancelled = false;
+    if (!selectedUF) { setMunicipalities([]); setSelectedCity(''); setCityQuery(''); setShowCityOptions(false); return; }
+    setMunicipalities([]); setSelectedCity(''); setCityQuery(''); setShowCityOptions(false); setLoadingMunicipalities(true);
+    fetch(`https://servicodados.ibge.gov.br/api/v1/localidades/estados/${selectedUF.code}/municipios?orderBy=nome`)
+      .then(response => { if (!response.ok) throw new Error(`IBGE ${response.status}`); return response.json(); })
+      .then(data => { if (!cancelled) setMunicipalities(Array.isArray(data) ? data.map(item => item.nome) : []); })
+      .catch(error => { console.warn('[ProjectXAddress] falha ao carregar municípios do IBGE:', error?.message || error); if (!cancelled) setMunicipalities([]); })
+      .finally(() => { if (!cancelled) setLoadingMunicipalities(false); });
+    return () => { cancelled = true; };
+  }, [selectedUF?.code]);
+  useEffect(() => {
+    let cancelled = false;
+    if (!selectedCity || !selectedUF) { setEventMapRegion(null); setSelectedEventCoords(null); return; }
+    (async () => {
+      try {
+        const results = await Location.geocodeAsync(`${selectedCity}, ${selectedUF.name}, Brasil`);
+        const point = results?.find(item => Number.isFinite(item?.latitude) && Number.isFinite(item?.longitude));
+        if (!cancelled && point) setEventMapRegion({ latitude: point.latitude, longitude: point.longitude, latitudeDelta: 0.035, longitudeDelta: 0.035 });
+      } catch (error) { console.warn('[ProjectXAddress] não foi possível centralizar o seletor no município:', error?.message || error); }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedCity, selectedUF?.code]);
   // Do not persist initial demo state until the first AsyncStorage read has completed.
   // Otherwise the initial render can overwrite announcements saved from a previous session.
   useEffect(() => { if (storageHydrated) AsyncStorage.setItem(STORAGE_KEYS.events, JSON.stringify(events)).catch(e => console.warn('Falha ao salvar anúncios localmente', e)); }, [events, storageHydrated]);
@@ -337,29 +418,98 @@ export default function App() {
   };
   const openMap = event => { const q = typeof event.latitude === 'number' && typeof event.longitude === 'number' ? `${event.latitude},${event.longitude}` : (event.address || `${event.venue}, ${event.neighborhood}, Brasília`); Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`); };
 
-  const publish = async () => {
+  const centerEventMapAt = (latitude, longitude, delta = 0.012) => {
+    const region = { latitude, longitude, latitudeDelta: delta, longitudeDelta: delta };
+    setEventMapRegion(region);
+    eventMapRef.current?.animateToRegion(region, 450);
+  };
+  const searchEventMapAddress = async () => {
+    const query = eventMapSearchText.trim();
+    if (!query) { Alert.alert('Digite um endereço', 'Informe uma rua, endereço ou estabelecimento para pesquisar no mapa.'); return; }
+    if (!selectedCity || !selectedUF) { Alert.alert('Selecione a cidade', 'Escolha primeiro o estado e a cidade do evento.'); return; }
+    setSearchingEventMapAddress(true);
+    try {
+      const fullQuery = [query, neighborhoodInput.trim(), selectedCity, selectedUF.name, 'Brasil'].filter(Boolean).join(', ');
+      const results = await Location.geocodeAsync(fullQuery);
+      const cityResults = await Location.geocodeAsync(`${selectedCity}, ${selectedUF.name}, Brasil`);
+      const cityAnchor = cityResults?.find(item => Number.isFinite(item?.latitude) && Number.isFinite(item?.longitude));
+      const point = results?.find(item => Number.isFinite(item?.latitude) && Number.isFinite(item?.longitude)
+        && (!cityAnchor || distanceKm(cityAnchor.latitude, cityAnchor.longitude, item.latitude, item.longitude) <= 60));
+      if (!point) {
+        Alert.alert('Endereço não encontrado', `Não encontramos esse endereço dentro da região de ${selectedCity} - ${selectedUF.code}. Tente incluir rua, número e bairro.`);
+        return;
+      }
+      const coords = { latitude: point.latitude, longitude: point.longitude };
+      setSelectedEventCoords(coords);
+      centerEventMapAt(coords.latitude, coords.longitude, 0.008);
+    } catch (error) {
+      console.warn('[ProjectXAddress] falha na busca do seletor de mapa:', error?.message || error);
+      Alert.alert('Falha na busca', 'Não foi possível pesquisar esse endereço agora. Verifique a conexão e tente novamente.');
+    } finally { setSearchingEventMapAddress(false); }
+  };
+  const centerEventMapOnCurrentLocation = async () => {
+    setLocatingEventMapUser(true);
+    try {
+      let permission = await Location.getForegroundPermissionsAsync();
+      if (permission.status !== 'granted') permission = await Location.requestForegroundPermissionsAsync();
+      if (permission.status !== 'granted') {
+        Alert.alert('Permissão de localização', 'Permita o acesso à localização nas configurações do iPhone ou pesquise o endereço manualmente.');
+        return;
+      }
+      if (!(await Location.hasServicesEnabledAsync())) {
+        Alert.alert('Localização desativada', 'Ative os Serviços de Localização do iPhone e tente novamente.');
+        return;
+      }
+      const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced, mayShowUserSettingsDialog: true });
+      const coords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
+      setSelectedEventCoords(coords);
+      centerEventMapAt(coords.latitude, coords.longitude, 0.008);
+    } catch (error) {
+      console.warn('[ProjectXAddress] falha ao obter localização atual:', error?.message || error);
+      Alert.alert('Localização indisponível', 'Não foi possível obter sua localização agora. Pesquise o endereço manualmente ou mova o marcador no mapa.');
+    } finally { setLocatingEventMapUser(false); }
+  };
+
+  const publish = async (locationConfirmed = false) => {
     if (!form.title.trim() || !form.venue.trim()) { Alert.alert('Faltam informações', 'Preencha o nome do evento e o local.'); return; }
+    if (!selectedUF) { Alert.alert('Selecione o estado', 'Escolha o estado antes de informar a localização do evento.'); return; }
+    if (!selectedCity) { Alert.alert('Selecione a cidade', 'Pesquise e selecione a cidade do evento na lista de municípios do estado escolhido.'); return; }
     if (!validDateTime(eventDateInput, eventTimeInput)) { Alert.alert('Confira data e horário', 'Informe uma data válida no formato DD/MM/AAAA e o horário no formato HH:MM.'); return; }
     const eventDateLabel = formatEventDate(eventDateInput, eventTimeInput);
     const priceLabel = priceIsFree ? 'Gratuito' : (form.price.trim() ? `R$ ${form.price.trim()}` : 'Consulte o organizador');
-    // Prioriza o endereço completo informado pela pessoa. Não presume Brasília,
-    // pois o evento pode acontecer em qualquer cidade do Brasil.
+    // Contextualiza todas as tentativas de geocodificação com a UF escolhida.
+    // Isso reduz resultados homônimos em cidades ou estados diferentes.
     const enteredAddress = form.address.trim();
+    const city = selectedCity.trim();
+    const neighborhood = neighborhoodInput.trim();
+    const regionText = [city, neighborhood].filter(Boolean).join(', ');
+    const stateName = selectedUF.name;
+    const stateCode = selectedUF.code;
     const locationCandidates = [
-      // Prioriza endereço contextualizado com bairro/cidade informado.
-      // Geocodificar primeiro um endereço curto (ex.: “QI 4 casa 34”) pode
-      // devolver uma rua homônima em outra região.
-      [enteredAddress, form.neighborhood.trim(), 'Brasil'].filter(Boolean).join(', '),
-      [form.venue.trim(), form.neighborhood.trim(), 'Brasil'].filter(Boolean).join(', '),
-      [form.neighborhood.trim(), 'Brasil'].filter(Boolean).join(', '),
-      enteredAddress,
-      [form.venue.trim(), form.neighborhood.trim()].filter(Boolean).join(', '),
-      form.venue.trim()
+      [enteredAddress, regionText, stateName, 'Brasil'].filter(Boolean).join(', '),
+      [form.venue.trim(), regionText, stateName, 'Brasil'].filter(Boolean).join(', '),
+      [neighborhood, city, stateName, 'Brasil'].filter(Boolean).join(', '),
+      [city, stateName, 'Brasil'].filter(Boolean).join(', '),
+      [enteredAddress, city, stateCode, 'Brasil'].filter(Boolean).join(', '),
+      [form.venue.trim(), city, stateCode, 'Brasil'].filter(Boolean).join(', ')
     ];
-    const geocoded = await geocodeEventLocation(locationCandidates);
+    const geocoded = selectedEventCoords
+      ? { ...selectedEventCoords, usedCityFallback: false, matchedAddress: 'Ponto selecionado manualmente no mapa' }
+      : await geocodeEventLocationInCity(locationCandidates, city, stateName);
     const coords = geocoded ? { latitude: geocoded.latitude, longitude: geocoded.longitude } : {};
-    const address = enteredAddress || [form.venue.trim(), form.neighborhood.trim()].filter(Boolean).join(', ');
-    const next = { ...form, date: eventDateLabel, price: priceLabel, id: `local-${Date.now()}`, neighborhood: form.neighborhood.trim(), emoji: '✨', color: '#D9D9E0', description: form.description || 'Mais informações com o organizador.', address, ...coords, demo: false, status: 'published' };
+    if (!locationConfirmed) {
+      const locationSummary = geocoded
+        ? `\n\nCoordenadas: ${geocoded.latitude.toFixed(5)}, ${geocoded.longitude.toFixed(5)}${selectedEventCoords ? '\nPonto escolhido no mapa.' : geocoded.usedCityFallback ? '\nPonto aproximado no centro da cidade.' : '\nPonto encontrado pelo endereço.'}`
+        : '\n\nNão conseguimos localizar o endereço automaticamente. O anúncio poderá ficar sem marcador.';
+      Alert.alert('Confirme a localização', `Confira se o ponto do evento está correto antes de publicar.${locationSummary}`, [
+        { text: 'Revisar mapa', style: 'cancel', onPress: () => setShowEventMapPicker(true) },
+        { text: 'Confirmar e publicar', onPress: () => { void publish(true); } }
+      ]);
+      return;
+    }
+    const address = [enteredAddress, regionText, stateName, 'Brasil'].filter(Boolean).join(', ') || [form.venue.trim(), regionText, stateName].filter(Boolean).join(', ');
+    const neighborhoodLabel = [city, neighborhood, stateCode].filter(Boolean).join(' - ');
+    const next = { ...form, date: eventDateLabel, price: priceLabel, id: `local-${Date.now()}`, neighborhood: neighborhoodLabel, city, state: stateCode, emoji: '✨', color: '#D9D9E0', description: form.description || 'Mais informações com o organizador.', address, ...coords, demo: false, status: 'published' };
     const updatedEvents = [next, ...events.filter(e => String(e.id) !== String(next.id))];
     setEvents(updatedEvents);
     try { await AsyncStorage.setItem(STORAGE_KEYS.events, JSON.stringify(updatedEvents)); }
@@ -371,14 +521,12 @@ export default function App() {
         await supabaseRequest('events', { method: 'POST', headers: { Prefer: 'return=representation' }, body: JSON.stringify(row) }); cloudMessage = 'O evento foi enviado ao banco de dados compartilhado. Ele aparecerá publicamente após passar pelas regras de publicação configuradas.'; syncFromCloud();
       } catch (e) { cloudMessage = `Salvo localmente, mas não foi possível publicar na nuvem: ${e.message}`; }
     }
-    setForm({ title: '', category: 'Gastronomia', venue: '', neighborhood: '', address: '', date: '', price: '', description: '' }); setEventDateInput(''); setEventTimeInput(''); setPriceIsFree(false); setShowMyAds(false); setTab('Anunciar');
-    const locationNote = geocoded
-      ? `
-
-Localização encontrada pelo endereço informado. Se o evento estiver fora do raio atual, busque a cidade/bairro no mapa para encontrá-lo.`
-      : `
-
-Atenção: não conseguimos localizar esse endereço automaticamente. O anúncio foi salvo, mas não terá marcador no mapa até que um endereço mais completo seja informado.`;
+    setForm({ title: '', category: 'Gastronomia', venue: '', neighborhood: '', address: '', date: '', price: '', description: '' }); setSelectedUF(null); setShowUFOptions(false); setMunicipalities([]); setCityQuery(''); setSelectedCity(''); setShowCityOptions(false); setNeighborhoodInput(''); setShowEventMapPicker(false); setSelectedEventCoords(null); setEventMapRegion(null); setEventMapSearchText(''); setSearchingEventMapAddress(false); setLocatingEventMapUser(false); setEventDateInput(''); setEventTimeInput(''); setPriceIsFree(false); setShowMyAds(false); setTab('Anunciar');
+    const locationNote = !geocoded
+      ? `\n\nAtenção: não conseguimos localizar a cidade ou o endereço automaticamente. O anúncio foi salvo, mas não terá marcador até corrigir a localização.`
+      : geocoded.usedCityFallback
+        ? `\n\nAtenção: não foi possível confirmar o endereço exato. O marcador foi colocado aproximadamente no centro de ${city}, ${stateCode}. Corrija o endereço em “Ver meus anúncios” para posicioná-lo com mais precisão.`
+        : `\n\nLocalização encontrada dentro da região de ${city}, ${stateCode}. Se o marcador não estiver no ponto correto, use “Ajustar localização do mapa” em “Ver meus anúncios”.`;
     Alert.alert('Anúncio criado', `${cloudMessage}${locationNote}`, [{ text: 'Ver meus anúncios', onPress: () => setShowMyAds(true) }, { text: 'Continuar', onPress: () => setTab('Explorar') }]);
   };
   const field = (key, placeholder, multiline = false) => <TextInput value={form[key]} onChangeText={v => setForm({ ...form, [key]: v })} placeholder={placeholder} placeholderTextColor="#9696A5" multiline={multiline} style={[styles.input, multiline && styles.multiline]} />;
@@ -484,7 +632,7 @@ Atenção: não conseguimos localizar esse endereço automaticamente. O anúncio
           </View>
         </View>) : <View style={styles.empty}><Text style={styles.emptyEmoji}>＋</Text><Text style={styles.emptyTitle}>Você ainda não criou anúncios</Text><Text style={styles.emptyText}>Quando publicar um evento, ele aparecerá aqui para você consultar.</Text><TouchableOpacity style={styles.primaryButton} onPress={() => setShowMyAds(false)}><Text style={styles.primaryButtonText}>Criar meu primeiro anúncio</Text></TouchableOpacity></View>}
       </View> : <><Text style={styles.formIntro}>Informe o endereço real do evento. O ProjectX tentará obter as coordenadas para criar o marcador no mapa. Com o Supabase configurado, o anúncio também poderá ser compartilhado.</Text>
-      <Text style={styles.label}>Nome do evento *</Text>{field('title', 'Ex.: Festival de música')}<Text style={styles.label}>Categoria</Text><View style={styles.categoryWrap}>{CATEGORIES.filter(c => c !== 'Tudo').map(c => <Pill key={c} label={c} active={form.category === c} onPress={() => setForm({ ...form, category: c })} />)}</View><Text style={styles.label}>Local / estabelecimento *</Text>{field('venue', 'Ex.: Parque, restaurante, casa de shows')}<Text style={styles.label}>Bairro, cidade e estado</Text>{field('neighborhood', 'Ex.: Chatuba, Mesquita - RJ')}<Text style={styles.label}>Endereço completo para o mapa</Text>{field('address', 'Rua, número, bairro, cidade - UF')}<Text style={styles.helperText}>Informe a cidade correta do evento. Isso ajuda a posicionar o marcador no mapa, inclusive quando o evento fica fora de Brasília.</Text>
+      <Text style={styles.label}>Nome do evento *</Text>{field('title', 'Ex.: Festival de música')}<Text style={styles.label}>Categoria</Text><View style={styles.categoryWrap}>{CATEGORIES.filter(c => c !== 'Tudo').map(c => <Pill key={c} label={c} active={form.category === c} onPress={() => setForm({ ...form, category: c })} />)}</View><Text style={styles.label}>Local / estabelecimento *</Text>{field('venue', 'Ex.: Parque, restaurante, casa de shows')}<Text style={styles.label}>Estado onde o evento acontecerá *</Text><TouchableOpacity accessibilityRole="button" accessibilityLabel="Selecionar estado" style={[styles.input, styles.stateSelector]} onPress={() => setShowUFOptions(v => !v)}><Text style={[styles.stateSelectorText, !selectedUF && styles.statePlaceholder]}>{selectedUF ? `${selectedUF.name} (${selectedUF.code})` : 'Selecione o estado primeiro'}</Text><Text style={styles.stateSelectorChevron}>{showUFOptions ? '⌃' : '⌄'}</Text></TouchableOpacity>{showUFOptions && <View style={styles.stateOptions}><ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled" style={styles.stateOptionsScroll}>{BRAZIL_STATES.map(state => <TouchableOpacity key={state.code} style={[styles.stateOption, selectedUF?.code === state.code && styles.stateOptionActive]} onPress={() => { setSelectedUF(state); setShowUFOptions(false); }}><Text style={[styles.stateOptionText, selectedUF?.code === state.code && styles.stateOptionTextActive]}>{state.name} ({state.code})</Text></TouchableOpacity>)}</ScrollView></View>}<Text style={styles.label}>Cidade *</Text><TextInput value={cityQuery} onFocus={() => { if (selectedUF) setShowCityOptions(true); }} onChangeText={value => { setCityQuery(value); setSelectedCity(''); setShowCityOptions(true); }} editable={!!selectedUF && !loadingMunicipalities} placeholder={!selectedUF ? 'Selecione o estado primeiro' : loadingMunicipalities ? 'Carregando cidades do estado…' : 'Digite para buscar uma cidade'} placeholderTextColor="#9696A5" style={styles.input} accessibilityLabel="Pesquisar cidade"/><Text style={styles.helperText}>{loadingMunicipalities ? 'Carregando a lista oficial de municípios do IBGE…' : selectedCity ? `Cidade selecionada: ${selectedCity} - ${selectedUF?.code}` : municipalities.length ? 'Escolha uma cidade na lista para continuar.' : 'Se a lista não carregar, verifique a conexão e tente novamente.'}</Text>{showCityOptions && !!selectedUF && !loadingMunicipalities && <View style={styles.stateOptions}><ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled" style={styles.stateOptionsScroll}>{cityQuery.trim().length < 2 ? <Text style={styles.helperText}>Digite pelo menos 2 letras para pesquisar entre todos os municípios de {selectedUF.name}.</Text> : municipalities.filter(name => name.toLocaleLowerCase('pt-BR').includes(cityQuery.trim().toLocaleLowerCase('pt-BR'))).slice(0, 40).map(name => <TouchableOpacity key={name} style={[styles.stateOption, selectedCity === name && styles.stateOptionActive]} onPress={() => { setSelectedCity(name); setCityQuery(name); setShowCityOptions(false); }}><Text style={[styles.stateOptionText, selectedCity === name && styles.stateOptionTextActive]}>{name} - {selectedUF.code}</Text></TouchableOpacity>)}{cityQuery.trim().length >= 2 && municipalities.filter(name => name.toLocaleLowerCase('pt-BR').includes(cityQuery.trim().toLocaleLowerCase('pt-BR'))).length === 0 && <Text style={styles.helperText}>Nenhuma cidade encontrada com esse nome. Confira a grafia.</Text>}</ScrollView></View>}<Text style={styles.label}>Bairro (opcional)</Text><TextInput value={neighborhoodInput} onChangeText={setNeighborhoodInput} placeholder="Ex.: Centro, Chatuba, Asa Sul" placeholderTextColor="#9696A5" style={styles.input} editable={!!selectedCity} accessibilityLabel="Bairro do evento"/><Text style={styles.label}>Rua e número / endereço completo</Text>{field('address', 'Ex.: Rua das Flores, 123')}<Text style={styles.helperText}>A cidade é selecionada em uma lista oficial de municípios do IBGE filtrada pelo estado. Depois, informe o bairro e o endereço para refinar a localização do marcador.</Text><TouchableOpacity accessibilityRole="button" style={styles.mapPickerToggle} disabled={!selectedCity} onPress={() => setShowEventMapPicker(v => !v)}><Text style={styles.mapPickerToggleText}>{showEventMapPicker ? 'Fechar mapa de localização' : selectedEventCoords ? 'Alterar ponto no mapa' : 'Marcar localização exata no mapa'}</Text></TouchableOpacity>{showEventMapPicker && !!selectedCity && <View style={styles.eventMapPickerWrap}><Text style={styles.helperText}>Toque no mapa no ponto exato do evento. Arraste o mapa para encontrar o local; o marcador será colocado onde você tocar.</Text><View style={styles.eventMapSearchRow}><TextInput value={eventMapSearchText} onChangeText={setEventMapSearchText} placeholder="Buscar rua, endereço ou local" placeholderTextColor="#9696A5" style={[styles.input, styles.eventMapSearchInput]} returnKeyType="search" onSubmitEditing={searchEventMapAddress} accessibilityLabel="Buscar endereço no mapa"/><TouchableOpacity style={styles.eventMapSearchButton} onPress={searchEventMapAddress} disabled={searchingEventMapAddress}>{searchingEventMapAddress ? <ActivityIndicator color="#FFFFFF"/> : <Text style={styles.eventMapSearchButtonText}>Buscar</Text>}</TouchableOpacity></View><TouchableOpacity style={styles.eventMapGpsButton} onPress={centerEventMapOnCurrentLocation} disabled={locatingEventMapUser}>{locatingEventMapUser ? <ActivityIndicator color="#45454F"/> : <Text style={styles.eventMapGpsText}>◎  Minha localização</Text>}</TouchableOpacity><MapView ref={eventMapRef} key={`${selectedCity}-${selectedUF?.code}-${eventMapRegion?.latitude ?? "loading"}-${eventMapRegion?.longitude ?? "loading"}`} style={styles.eventMapPicker} initialRegion={eventMapRegion || { latitude: userCoords?.latitude ?? -15.7939, longitude: userCoords?.longitude ?? -47.8828, latitudeDelta: 0.06, longitudeDelta: 0.06 }} onMapReady={() => { if (eventMapRegion) eventMapRef.current?.animateToRegion(eventMapRegion, 250); }} onPress={e => { const point = e.nativeEvent.coordinate; setSelectedEventCoords({ latitude: point.latitude, longitude: point.longitude }); }}><>{selectedEventCoords && <Marker draggable coordinate={{ latitude: selectedEventCoords.latitude, longitude: selectedEventCoords.longitude }} title="Local do evento" description="Arraste para ajustar o ponto" onDragEnd={e => { const point = e.nativeEvent.coordinate; setSelectedEventCoords({ latitude: point.latitude, longitude: point.longitude }); }} />}</></MapView><Text style={styles.helperText}>{selectedEventCoords ? `Ponto selecionado: ${selectedEventCoords.latitude.toFixed(5)}, ${selectedEventCoords.longitude.toFixed(5)}` : 'Nenhum ponto selecionado. Toque no mapa para marcar o local.'}</Text>{selectedEventCoords && <TouchableOpacity style={styles.clearMapPointButton} onPress={() => setSelectedEventCoords(null)}><Text style={styles.clearMapPointText}>Remover ponto selecionado</Text></TouchableOpacity>}</View>}
       <Text style={styles.label}>Data do evento *</Text><View style={styles.quickDateRow}><TouchableOpacity style={styles.quickDateButton} onPress={() => { const d = new Date(); setEventDateInput(`${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`); }}><Text style={styles.quickDateText}>Hoje</Text></TouchableOpacity><TouchableOpacity style={styles.quickDateButton} onPress={() => { const d = new Date(); d.setDate(d.getDate()+1); setEventDateInput(`${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`); }}><Text style={styles.quickDateText}>Amanhã</Text></TouchableOpacity></View>
       <View style={styles.dateTimeRow}><View style={styles.dateFieldWrap}><Text style={styles.fieldHint}>Dia / mês / ano</Text><TextInput value={eventDateInput} onChangeText={v => setEventDateInput(maskDateInput(v))} placeholder="DD/MM/AAAA" placeholderTextColor="#9696A5" keyboardType="number-pad" maxLength={10} style={styles.input}/></View><View style={styles.timeFieldWrap}><Text style={styles.fieldHint}>Horário</Text><TextInput value={eventTimeInput} onChangeText={v => setEventTimeInput(maskTimeInput(v))} placeholder="HH:MM" placeholderTextColor="#9696A5" keyboardType="number-pad" maxLength={5} style={styles.input}/></View></View><Text style={styles.helperText}>Exemplo: 25/10/2026 às 19:30. Use o formato de 24 horas.</Text>
       <Text style={styles.label}>Preço / entrada</Text><TouchableOpacity style={[styles.freePriceButton, priceIsFree && styles.freePriceButtonActive]} onPress={() => { setPriceIsFree(!priceIsFree); if (!priceIsFree) setForm({ ...form, price: '' }); }}><Text style={[styles.freePriceText, priceIsFree && styles.freePriceTextActive]}>{priceIsFree ? '✓ Entrada gratuita' : 'Marcar como gratuito'}</Text></TouchableOpacity>{!priceIsFree && <View style={styles.currencyInputWrap}><Text style={styles.currencyPrefix}>R$</Text><TextInput value={form.price} onChangeText={v => setForm({ ...form, price: currencyInput(v) })} placeholder="0,00" placeholderTextColor="#9696A5" keyboardType="decimal-pad" style={[styles.input, styles.currencyInput]} accessibilityLabel="Valor em reais"/><Text style={styles.currencyHint}>Valor em reais (BRL)</Text></View>}<Text style={styles.helperText}>Se houver cobrança, informe o valor em reais. Se não souber, deixe em branco.</Text>
@@ -495,6 +643,14 @@ Atenção: não conseguimos localizar esse endereço automaticamente. O anúncio
   </SafeAreaView>;
 }
 const styles = StyleSheet.create({
+ eventMapSearchRow:{flexDirection:'row',alignItems:'center',gap:8}, eventMapSearchInput:{flex:1,marginBottom:0}, eventMapSearchButton:{backgroundColor:'#45454F',borderRadius:12,minWidth:78,paddingHorizontal:12,paddingVertical:13,alignItems:'center',justifyContent:'center'}, eventMapSearchButtonText:{color:'#FFFFFF',fontWeight:'700',fontSize:13}, eventMapGpsButton:{alignSelf:'flex-start',borderRadius:12,borderWidth:1,borderColor:'#DAD9E4',backgroundColor:'#FFFFFF',paddingHorizontal:13,paddingVertical:10,marginTop:8,marginBottom:8}, eventMapGpsText:{color:'#45454F',fontWeight:'700',fontSize:13},
+ mapPickerToggle:{borderRadius:13,backgroundColor:'#45454F',paddingVertical:14,paddingHorizontal:16,alignItems:'center',justifyContent:'center',marginTop:8,marginBottom:10},
+ mapPickerToggleText:{color:'#FFFFFF',fontSize:14,fontWeight:'700'}, eventMapPickerWrap:{marginBottom:12,gap:8}, eventMapPicker:{height:260,borderRadius:16,overflow:'hidden'}, clearMapPointButton:{paddingVertical:10,alignItems:'center'}, clearMapPointText:{color:'#8A3540',fontSize:13,fontWeight:'600'},
+ stateSelector:{flexDirection:'row',alignItems:'center',justifyContent:'space-between'},
+ stateSelectorText:{fontSize:14,color:'#222232',flex:1}, statePlaceholder:{color:'#9696A5'}, stateSelectorChevron:{fontSize:18,color:'#6B6B7B',marginLeft:10},
+ stateOptions:{borderWidth:1,borderColor:'#ECEBF3',borderRadius:14,backgroundColor:'#FFFFFF',marginTop:-4,marginBottom:12,overflow:'hidden'},
+ stateOptionsScroll:{maxHeight:190}, stateOption:{paddingHorizontal:14,paddingVertical:11,borderBottomWidth:1,borderBottomColor:'#F0EFF5'},
+ stateOptionActive:{backgroundColor:'#45454F'}, stateOptionText:{fontSize:14,color:'#343447'}, stateOptionTextActive:{color:'#FFFFFF',fontWeight:'700'},
  mapScreen:{flex:1,backgroundColor:'#EDECF4'},
   mapOverlay:{...StyleSheet.absoluteFillObject,justifyContent:'flex-start',paddingTop:6,paddingBottom:0},
  mapTopCard:{marginHorizontal:14,backgroundColor:'rgba(247,247,251,0.96)',borderRadius:23,paddingHorizontal:14,paddingTop:8,paddingBottom:10,shadowColor:'#171725',shadowOpacity:0.10,shadowRadius:14,shadowOffset:{width:0,height:4},elevation:4},
