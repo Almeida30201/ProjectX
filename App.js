@@ -499,7 +499,7 @@ export default function App() {
     const coords = geocoded ? { latitude: geocoded.latitude, longitude: geocoded.longitude } : {};
     if (!locationConfirmed) {
       const locationSummary = geocoded
-        ? `\n\nCoordenadas: ${geocoded.latitude.toFixed(5)}, ${geocoded.longitude.toFixed(5)}${selectedEventCoords ? '\\nPonto escolhido no mapa.' : geocoded.usedCityFallback ? '\\nPonto aproximado no centro da cidade.' : '\\nPonto encontrado pelo endereço.'}`
+        ? `\n\nCoordenadas: ${geocoded.latitude.toFixed(5)}, ${geocoded.longitude.toFixed(5)}${selectedEventCoords ? '\nPonto escolhido no mapa.' : geocoded.usedCityFallback ? '\nPonto aproximado no centro da cidade.' : '\nPonto encontrado pelo endereço.'}`
         : '\n\nNão conseguimos localizar o endereço automaticamente. O anúncio poderá ficar sem marcador.';
       Alert.alert('Confirme a localização', `Confira se o ponto do evento está correto antes de publicar.${locationSummary}`, [
         { text: 'Revisar mapa', style: 'cancel', onPress: () => setShowEventMapPicker(true) },
