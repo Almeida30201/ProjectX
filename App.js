@@ -81,6 +81,10 @@ function isFreeEvent(event) {
   if (price.includes('gratuit') || price.includes('grátis') || price.includes('gratis')) return true;
   return /r\$\s*0(?:[,.]00)?(?:\s|$)/i.test(price);
 }
+function isPaidEvent(event) {
+  const price = String(event?.price || event?.price_label || '').trim().toLocaleLowerCase('pt-BR');
+  return price.includes('r$') && !isFreeEvent(event);
+}
 function eventIdentity(event) {
   return [event?.title, event?.venue, event?.date || event?.event_date]
     .map(value => String(value || '').trim().toLocaleLowerCase('pt-BR'))
@@ -280,7 +284,7 @@ export default function App() {
   };
   const filtered = useMemo(() => {
     let list = events.filter(e => (category === 'Tudo' || e.category === category)
-      && (priceFilter === 'Todos' || (priceFilter === 'Gratuitos' ? isFreeEvent(e) : !isFreeEvent(e)))
+      && (priceFilter === 'Todos' || (priceFilter === 'Gratuitos' ? isFreeEvent(e) : isPaidEvent(e)))
       && `${e.title} ${e.venue} ${e.neighborhood} ${e.city || ''} ${e.state || ''} ${e.address || ''} ${e.category} ${e.description || ''}`.toLocaleLowerCase('pt-BR').includes(query.trim().toLocaleLowerCase('pt-BR')));
     list = list.map(e => ({ ...e, distanceKm: userCoords ? distanceKm(userCoords.latitude, userCoords.longitude, e.latitude, e.longitude) : null }));
     if (userCoords) list = list.filter(e => e.distanceKm == null || e.distanceKm <= radius).sort((a, b) => {
