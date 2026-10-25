@@ -75,6 +75,16 @@ function validDateTime(date, time) {
 function formatEventDate(date, time) {
   return `${date} às ${time}`;
 }
+function isFreeEvent(event) {
+  const price = String(event?.price || event?.price_label || '').trim().toLocaleLowerCase('pt-BR');
+  if (!price) return false;
+  if (price.includes('gratuit') || price.includes('grátis') || price.includes('gratis')) return true;
+  return /r\$\s*0(?:[,.]00)?(?:\s|$)/i.test(price);
+}
+function isPaidEvent(event) {
+  const price = String(event?.price || event?.price_label || '').trim().toLocaleLowerCase('pt-BR');
+  return price.includes('r$') && !isFreeEvent(event);
+}
 function eventIdentity(event) {
   return [event?.title, event?.venue, event?.date || event?.event_date]
     .map(value => String(value || '').trim().toLocaleLowerCase('pt-BR'))
@@ -183,7 +193,7 @@ async function supabaseRequest(path, options = {}, accessToken = null) {
 
 export default function App() {
   const mapRef = React.useRef(null);
-  const [tab, setTab] = useState('Explorar'); const [category, setCategory] = useState('Tudo'); const [query, setQuery] = useState('');
+  const [tab, setTab] = useState('Explorar'); const [category, setCategory] = useState('Tudo'); const [query, setQuery] = useState(''); const [priceFilter, setPriceFilter] = useState('Todos');
   const [storageHydrated, setStorageHydrated] = useState(false); const [showMyAds, setShowMyAds] = useState(false);
   const [events, setEvents] = useState(SEED_EVENTS); const [savedIds, setSavedIds] = useState([]); const [selected, setSelected] = useState(null);
   const [locationLabel, setLocationLabel] = useState('Brasília, DF'); const [userCoords, setUserCoords] = useState(null); const [radius, setRadius] = useState(10);
@@ -273,7 +283,9 @@ export default function App() {
     finally { setRefreshingEvents(false); }
   };
   const filtered = useMemo(() => {
-    let list = events.filter(e => (category === 'Tudo' || e.category === category) && `${e.title} ${e.venue} ${e.neighborhood} ${e.city || ''} ${e.state || ''} ${e.address || ''} ${e.category} ${e.description || ''}`.toLocaleLowerCase('pt-BR').includes(query.trim().toLocaleLowerCase('pt-BR')));
+    let list = events.filter(e => (category === 'Tudo' || e.category === category)
+      && (priceFilter === 'Todos' || (priceFilter === 'Gratuitos' ? isFreeEvent(e) : isPaidEvent(e)))
+      && `${e.title} ${e.venue} ${e.neighborhood} ${e.city || ''} ${e.state || ''} ${e.address || ''} ${e.category} ${e.description || ''}`.toLocaleLowerCase('pt-BR').includes(query.trim().toLocaleLowerCase('pt-BR')));
     list = list.map(e => ({ ...e, distanceKm: userCoords ? distanceKm(userCoords.latitude, userCoords.longitude, e.latitude, e.longitude) : null }));
     if (userCoords) list = list.filter(e => e.distanceKm == null || e.distanceKm <= radius).sort((a, b) => {
       if (a.distanceKm == null && b.distanceKm == null) return 0;
@@ -282,7 +294,7 @@ export default function App() {
       return a.distanceKm - b.distanceKm;
     });
     return list;
-  }, [events, category, query, userCoords, radius]);
+  }, [events, category, query, priceFilter, userCoords, radius]);
   const savedEvents = useMemo(() => events.filter(e => savedIds.includes(String(e.id))).map(e => ({ ...e, distanceKm: userCoords ? distanceKm(userCoords.latitude, userCoords.longitude, e.latitude, e.longitude) : null })), [events, savedIds, userCoords]);
   const myAds = useMemo(() => events.filter(e => String(e.id).startsWith('local-')).map(e => ({ ...e, distanceKm: userCoords ? distanceKm(userCoords.latitude, userCoords.longitude, e.latitude, e.longitude) : null })), [events, userCoords]);
   const toggleSaved = eventId => setSavedIds(current => current.includes(String(eventId)) ? current.filter(id => id !== String(eventId)) : [...current, String(eventId)]);
@@ -585,6 +597,10 @@ export default function App() {
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.mapPillsRow}>
             {CATEGORIES.map(c => <Pill key={c} label={c} active={category === c} onPress={() => setCategory(c)} />)}
           </ScrollView>
+          <View style={styles.priceFilterRow}>
+            <Text style={styles.priceFilterLabel}>Preço</Text>
+            {['Todos', 'Gratuitos', 'Pagos'].map(option => <Pill key={option} label={option} active={priceFilter === option} onPress={() => setPriceFilter(option)} />)}
+          </View>
         </View>
         <View style={styles.mapControls}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.radiusMapRow}>
@@ -663,7 +679,7 @@ const styles = StyleSheet.create({
  mapBrandRow:{flexDirection:'row',alignItems:'center',justifyContent:'space-between',marginBottom:9},
  mapSearchBox:{height:46,backgroundColor:'#FFFFFF',borderRadius:15,borderWidth:1,borderColor:'#ECEBF3',flexDirection:'row',alignItems:'center',paddingHorizontal:12,marginBottom:7},
  mapRegionRow:{height:38,backgroundColor:'#FFFFFF',borderRadius:12,borderWidth:1,borderColor:'#ECEBF3',flexDirection:'row',alignItems:'center',paddingLeft:10,paddingRight:4,marginBottom:8},
- mapPillsRow:{gap:7,paddingBottom:1},
+ mapPillsRow:{gap:7,paddingBottom:1}, priceFilterRow:{flexDirection:'row',alignItems:'center',gap:6,marginTop:7,paddingBottom:1}, priceFilterLabel:{fontSize:11,fontWeight:'800',color:'#777786',marginRight:2},
  mapControls:{flexDirection:'row',alignItems:'center',gap:8,marginLeft:14,marginRight:76,marginTop:7},
  radiusMapRow:{gap:7,paddingRight:4},
  mapRightRail:{position:'absolute',right:12,top:275,alignItems:'center',gap:10},
